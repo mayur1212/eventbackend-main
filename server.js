@@ -26,7 +26,7 @@ if (!fs.existsSync(uploadDir)) {
 
 // Middleware
 app.use(cors({
-  origin: ['https://eventfrontend-9c5x.onrender.com', 'http://localhost:3000'],
+  origin: ['https://eventfrontend-main.onrender.com', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
