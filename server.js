@@ -347,3 +347,15 @@ app.delete('/api/events/:id', async (req, res) => {
     res.status(500).json({ message: 'Error deleting event' });
   }
 });
+
+const reactBuildPath = path.join(__dirname, 'client/build'); // adjust if different
+if (fs.existsSync(reactBuildPath)) {
+  app.use(express.static(reactBuildPath));
+
+  // Catch-all to handle React Router routes like /login, /dashboard
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(reactBuildPath, 'index.html'));
+  });
+} else {
+  console.warn('⚠️ React build folder not found. Run `npm run build` in your React app.');
+}
