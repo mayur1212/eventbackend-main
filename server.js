@@ -26,7 +26,7 @@ if (!fs.existsSync(uploadDir)) {
 
 // Middleware
 app.use(cors({
-  origin: ['https://eventfrontend-9c5x.onrender.com', 'http://localhost:3000'],
+  origin: ['https://eventfrontend-main.onrender.com', 'http://localhost:3000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
@@ -348,6 +348,7 @@ app.delete('/api/events/:id', async (req, res) => {
   }
 });
 
+
 const reactBuildPath = path.join(__dirname, 'client/build'); // adjust if different
 if (fs.existsSync(reactBuildPath)) {
   app.use(express.static(reactBuildPath));
@@ -359,3 +360,4 @@ if (fs.existsSync(reactBuildPath)) {
 } else {
   console.warn('⚠️ React build folder not found. Run `npm run build` in your React app.');
 }
+
