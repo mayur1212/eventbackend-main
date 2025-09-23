@@ -349,13 +349,4 @@ app.delete('/api/events/:id', async (req, res) => {
 });
 
 
-const reactBuildPath = path.join(__dirname, 'client/build'); // adjust if your React build folder is elsewhere
-if (fs.existsSync(reactBuildPath)) {
-  app.use(express.static(reactBuildPath));
 
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(reactBuildPath, 'index.html'));
-  });
-} else {
-  console.warn('⚠️ React build folder not found. Make sure to run `npm run build` in your React app.');
-}
