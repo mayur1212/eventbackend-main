@@ -26,7 +26,7 @@ if (!fs.existsSync(uploadDir)) {
 
 // Middleware
 app.use(cors({
-  origin: ['https://eventfrontend-main.onrender.com', 'http://localhost:3000'],
+  origin: ['https://eventfrontend-main.onrender.com', 'http://localhost:3000', 'https://artiststation.co.in'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
