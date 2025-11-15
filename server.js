@@ -1,268 +1,252 @@
-require('dotenv').config();
+// server.js (full updated file)
 
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const crypto = require('crypto');
-const nodemailer = require('nodemailer');
-
-const Event = require('./models/Event');
+require("dotenv").config();
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+const bodyParser = require("body-parser");
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
+const multer = require("multer");
+const path = require("path");
+const fs = require("fs");
+const http = require("http");
+const Event = require("./models/Event"); // Your Mongoose model
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Ensure uploads directory exists
-const uploadDir = path.join(__dirname, 'uploads');
-if (!fs.existsSync(uploadDir)) {
-  fs.mkdirSync(uploadDir, { recursive: true });
-  console.log('✅ Created uploads directory');
-}
+// ======================== Ensure Uploads Folder ========================
+const uploadDir = path.join(__dirname, "uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// Middleware
-app.use(cors({
+// ======================== Request logging (debug) ========================
+// Place this early so all incoming requests are logged
+app.use((req, res, next) => {
+  console.log(`⤴️  Incoming -> ${req.method} ${req.originalUrl}`);
+  next();
+});
 
-  origin: ['https://eventfrontend-main.onrender.com', 'http://localhost:3000','https://artiststation.co.in'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
-app.use(bodyParser.json());
-app.use('/uploads', express.static(uploadDir));
+// ======================== Middleware ========================
+app.use(
+  cors({
+    origin: [
+      "https://eventfrontend-main.onrender.com",
+      "http://localhost:3000",
+      "https://artiststation.co.in",
+    ],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
 
-// MongoDB Connection
-mongoose.connect(process.env.MONGO_URI)
+app.use(express.json({ limit: "10mb" }));
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use("/uploads", express.static(uploadDir)); // serve images
+
+// ======================== MongoDB Connection ========================
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB Connected");
-    app.listen(PORT, () => console.log(`🚀 Server running at http://localhost:${PORT}`));
+    const server = http.createServer(app);
+    server.listen(PORT, () =>
+      console.log(`🚀 Server running on port ${PORT} (HTTP/1.1)`)
+    );
   })
-  .catch(err => console.error("❌ MongoDB Connection Error:", err));
+  .catch((err) => console.error("❌ MongoDB Connection Error:", err));
 
-// JWT Middleware for protected routes
+// ======================== JWT Middleware ========================
 const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  if (!authHeader) return res.status(401).json({ message: 'Authorization header missing' });
+  const authHeader = req.headers["authorization"];
+  if (!authHeader)
+    return res.status(401).json({ message: "Authorization header missing" });
 
-  const token = authHeader.split(' ')[1];
-  if (!token) return res.status(401).json({ message: 'Token missing' });
+  const token = authHeader.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Token missing" });
 
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ message: 'Invalid or expired token' });
-    req.user = decoded;  // contains at least id and email
+    if (err) return res.status(403).json({ message: "Invalid or expired token" });
+    req.user = decoded;
     next();
   });
 };
 
-// Multer setup for file uploads
+// ======================== Multer Config ========================
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`)
+  filename: (req, file, cb) =>
+    cb(null, `${Date.now()}-${file.originalname.replace(/\s+/g, "-")}`),
 });
+
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
   fileFilter: (req, file, cb) => {
     const allowedTypes = /jpeg|jpg|png|gif/;
-    const isValid = allowedTypes.test(file.mimetype);
-    if (isValid) cb(null, true);
-    else cb(new Error('Invalid file type. Only jpeg, jpg, png, gif allowed.'));
-  }
+    allowedTypes.test(file.mimetype)
+      ? cb(null, true)
+      : cb(new Error("Only image files allowed."));
+  },
 });
 
+// =============================================================
+// ======================== API ROUTES ==========================
+// =============================================================
 
-// Routes
+// ------------------------ Debug/Health ------------------------
+app.get("/api/ping", (req, res) => {
+  console.log("🟢 GET /api/ping");
+  res.json({ ok: true, env: process.env.NODE_ENV || "unknown" });
+});
 
-// Registration
-app.post('/api/register', async (req, res) => {
+// TEMP: debug route to test multer/form-data without auth
+// REMOVE or protect this route after you finish debugging.
+app.post("/api/update-profile-debug", upload.single("profileImg"), async (req, res) => {
+  console.log("🔧 Hit /api/update-profile-debug", {
+    body: req.body,
+    file: req.file && req.file.filename,
+  });
+  res.json({ success: true, message: "debug ok", body: req.body, file: req.file ? req.file.filename : null });
+});
+
+// ======================== REGISTER ========================
+app.post("/api/register", async (req, res) => {
   try {
-    const { eventName, clientName, contactNumber, email, password, venue, city, startDate, endDate } = req.body;
+    const {
+      eventName,
+      clientName,
+      contactNumber,
+      email,
+      password,
+      venue,
+      city,
+      startDate,
+      endDate,
+    } = req.body;
 
     const existing = await Event.findOne({ email });
-    if (existing) return res.status(400).json({ message: 'Email already exists.' });
+    if (existing) return res.status(400).json({ message: "Email already exists" });
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const newEvent = new Event({
-      eventName, clientName, contactNumber, email,
+      eventName,
+      clientName,
+      contactNumber,
+      email,
       password: hashedPassword,
-      venue, city, startDate, endDate
+      venue,
+      city,
+      startDate,
+      endDate,
     });
 
     await newEvent.save();
-    res.status(201).json({ message: 'Registration successful!' });
+    res.status(201).json({ message: "Registration successful!" });
   } catch (err) {
-    console.error('Register Error:', err);
-    res.status(500).json({ message: 'Server error during registration' });
+    console.error("Register Error:", err);
+    res.status(500).json({ message: "Server error during registration" });
   }
 });
 
-// Login
-app.post('/api/login', async (req, res) => {
+// ======================== LOGIN ========================
+app.post("/api/login", async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await Event.findOne({ email });
-    if (!user) return res.status(400).json({ message: 'User not found' });
+    if (!user) return res.status(400).json({ message: "User not found" });
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ message: 'Invalid credentials' });
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) return res.status(400).json({ message: "Invalid credentials" });
 
     const token = jwt.sign(
       { id: user._id, email: user.email },
       process.env.JWT_SECRET,
-      { expiresIn: '1h' }
+      { expiresIn: "1h" }
     );
 
-    res.json({ message: 'Login successful!', token });
+    res.json({ message: "Login successful!", token });
   } catch (err) {
-    console.error('Login Error:', err);
-    res.status(500).json({ message: 'Server error during login' });
+    res.status(500).json({ message: "Server error during login" });
   }
 });
 
-// Forgot Password
-app.post('/forgot-password', async (req, res) => {
-  const { email } = req.body;
+// ======================== FETCH CURRENT USER ========================
+app.get("/api/me", authenticateToken, async (req, res) => {
   try {
-    const user = await Event.findOne({ email });
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    const user = await Event.findById(req.user.id).select("-password -__v");
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    const token = crypto.randomBytes(32).toString('hex');
-    user.resetToken = token;
-    user.resetTokenExpiry = Date.now() + 3600000;
-    await user.save();
-
-    const transporter = nodemailer.createTransport({
-      service: 'Gmail',
-      auth: {
-        user: 'your-email@gmail.com',
-        pass: 'your-email-password',
-      }
-    });
-
-    const resetURL = `http://localhost:3000/reset-password/${token}`;
-    const mailOptions = {
-      from: 'your-email@gmail.com',
-      to: email,
-      subject: 'Reset Your Password',
-      html: `<p>You requested a password reset</p><p><a href="${resetURL}">Click here to reset</a></p>`
-    };
-
-    await transporter.sendMail(mailOptions);
-    res.status(200).json({ message: 'Reset email sent' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Something went wrong' });
-  }
-});
-
-// Reset Password
-app.post('/reset-password/:token', async (req, res) => {
-  const { token } = req.params;
-  const { newPassword } = req.body;
-  try {
-    const user = await Event.findOne({
-      resetToken: token,
-      resetTokenExpiry: { $gt: Date.now() },
-    });
-
-    if (!user) return res.status(400).json({ message: 'Invalid or expired token' });
-
-
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    user.password = hashedPassword;
-    user.resetToken = undefined;
-    user.resetTokenExpiry = undefined;
-
-    await user.save();
-    res.json({ message: 'Password has been reset successfully' });
-  } catch (err) {
-    res.status(500).json({ message: 'Error resetting password' });
-  }
-});
-
-// Get profile
-// app.get('/api/me', async (req, res) => {
-//   try {
-//     const user = await Event.findById(req.user.id).select('-password');
-//     if (!user) return res.status(404).json({ message: 'User not found' });
-//     res.json(user);
-//   } catch (err) {
-//     res.status(500).json({ message: 'Error fetching user data' });
-//   }
-// });
-// GET user profile
-app.get('/api/me', authenticateToken, async (req, res) => {
-  try {
-    const user = await Event.findById(req.user.id).select('-password -resetToken -resetTokenExpiry -__v');
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get("host")}`;
 
     const userObj = user.toObject();
+    if (userObj.profileImg) userObj.profileImg = `${baseUrl}${userObj.profileImg}`;
 
-    // ✅ Make sure BASE_URL exists
-    const baseUrl = process.env.BASE_URL || 'http://localhost:5000';
-
-    if (userObj.profileImg) {
-      userObj.profileImg = `${baseUrl}${userObj.profileImg}`;
-    }
-
-    res.json(userObj);
+    res.json({ success: true, user: userObj });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error fetching user data' });
+    res.status(500).json({ message: "Error fetching user data" });
   }
 });
 
-// PUT update user profile
-app.put('/api/update-profile', authenticateToken, upload.single('profileImg'), async (req, res) => {
-  try {
-    const { clientName, contactNumber, email } = req.body;
-    const user = await Event.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: 'User not found' });
+// ======================== UPDATE PROFILE (with image) ========================
+app.post(
+  "/api/update-profile",
+  authenticateToken,
+  upload.single("profileImg"),
+  async (req, res) => {
+    console.log("🔹 Hit /api/update-profile");
 
-    // Delete old profile image if new one is uploaded
-    if (req.file && user.profileImg) {
-      const oldImagePath = path.join(uploadDir, path.basename(user.profileImg));
-      if (fs.existsSync(oldImagePath)) {
-        fs.unlinkSync(oldImagePath);
+    try {
+      const { clientName, contactNumber, email } = req.body;
+      const user = await Event.findById(req.user.id);
+
+      if (!user)
+        return res.status(404).json({ success: false, message: "User not found" });
+
+      // Delete old image if new uploaded
+      if (req.file && user.profileImg) {
+        const oldPath = path.join(uploadDir, path.basename(user.profileImg));
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
       }
+
+      user.clientName = clientName || user.clientName;
+      user.contactNumber = contactNumber || user.contactNumber;
+      user.email = email || user.email;
+
+      if (req.file) {
+        user.profileImg = `/uploads/${req.file.filename}`;
+      }
+
+      await user.save();
+
+      const baseUrl = process.env.BASE_URL || `${req.protocol}://${req.get("host")}`;
+
+      return res.json({
+        success: true,
+        message: "Profile updated successfully",
+        user: {
+          clientName: user.clientName,
+          email: user.email,
+          contactNumber: user.contactNumber,
+          profileImg: user.profileImg ? `${baseUrl}${user.profileImg}` : null,
+        },
+      });
+    } catch (err) {
+      console.error("Update profile error:", err);
+      res.status(500).json({
+        success: false,
+        message: "Server error while updating profile",
+      });
     }
-
-    // Update user fields
-    if (clientName) user.clientName = clientName;
-    if (contactNumber) user.contactNumber = contactNumber;
-    if (email) user.email = email;
-    if (req.file) user.profileImg = `/uploads/${req.file.filename}`;
-
-    await user.save();
-
-    const updatedUser = await Event.findById(req.user.id).select('-password -resetToken -resetTokenExpiry -__v');
-    const updatedObj = updatedUser.toObject();
-
-    const baseUrl = process.env.BASE_URL || 'http://localhost:5000';
-
-    if (updatedObj.profileImg) {
-      updatedObj.profileImg = `${baseUrl}${updatedObj.profileImg}`;
-    }
-
-    res.json(updatedObj);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error updating profile' });
   }
-});
+);
 
-
-
-
-// DELETE profile image
-app.delete('/api/remove-profile-image', authenticateToken, async (req, res) => {
+// ======================== REMOVE PROFILE IMAGE ========================
+app.delete("/api/remove-profile-image", authenticateToken, async (req, res) => {
   try {
     const user = await Event.findById(req.user.id);
-    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
     if (user.profileImg) {
       const imgPath = path.join(uploadDir, path.basename(user.profileImg));
@@ -272,53 +256,91 @@ app.delete('/api/remove-profile-image', authenticateToken, async (req, res) => {
     user.profileImg = undefined;
     await user.save();
 
-    res.json({ message: 'Profile image removed' });
+    res.status(200).json({
+      success: true,
+      message: "Profile image removed successfully",
+      user: { ...user.toObject(), profileImg: null },
+    });
   } catch (err) {
-    res.status(500).json({ message: 'Error removing profile image' });
+    res.status(500).json({ success: false, message: "Error removing image" });
   }
 });
 
-// Event CRUD APIs
-app.get('/api/events', async (req, res) => {
+// =============================================================
+// ======================== EVENTS CRUD =========================
+// =============================================================
+app.get("/api/events", async (req, res) => {
   try {
     const events = await Event.find({}, { password: 0, __v: 0 });
     res.json(events);
   } catch (err) {
-    res.status(500).json({ message: 'Error fetching events' });
+    res.status(500).json({ message: "Error fetching events" });
   }
 });
 
-app.get('/api/events/:id', async (req, res) => {
+app.get("/api/events/:id", async (req, res) => {
   try {
     const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: 'Event not found' });
+    if (!event) return res.status(404).json({ message: "Event not found" });
     res.json(event);
   } catch (err) {
-    res.status(500).json({ message: 'Error fetching event' });
+    res.status(500).json({ message: "Error fetching event" });
   }
 });
 
-app.post('/api/events', async (req, res) => {
+app.post("/api/events", async (req, res) => {
   try {
-    const { eventName, clientName, contactNumber, email, password, venue, city, startDate, endDate } = req.body;
+    const {
+      eventName,
+      clientName,
+      contactNumber,
+      email,
+      password,
+      venue,
+      city,
+      startDate,
+      endDate,
+    } = req.body;
+
     const existing = await Event.findOne({ email });
-    if (existing) return res.status(400).json({ message: 'Email already exists for another event.' });
+    if (existing) return res.status(400).json({ message: "Email already exists for another event." });
 
     const hashedPassword = password ? await bcrypt.hash(password, 10) : null;
-    const newEvent = new Event({ eventName, clientName, contactNumber, email, password: hashedPassword, venue, city, startDate, endDate });
+    const newEvent = new Event({
+      eventName,
+      clientName,
+      contactNumber,
+      email,
+      password: hashedPassword,
+      venue,
+      city,
+      startDate,
+      endDate,
+    });
 
     await newEvent.save();
     res.status(201).json(newEvent);
   } catch (err) {
-    res.status(500).json({ message: 'Error creating event' });
+    res.status(500).json({ message: "Error creating event" });
   }
 });
 
-app.put('/api/events/:id', async (req, res) => {
+app.put("/api/events/:id", async (req, res) => {
   try {
-    const { eventName, clientName, contactNumber, email, password, venue, city, startDate, endDate } = req.body;
+    const {
+      eventName,
+      clientName,
+      contactNumber,
+      email,
+      password,
+      venue,
+      city,
+      startDate,
+      endDate,
+    } = req.body;
+
     const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: 'Event not found' });
+    if (!event) return res.status(404).json({ message: "Event not found" });
 
     event.eventName = eventName ?? event.eventName;
     event.clientName = clientName ?? event.clientName;
@@ -331,34 +353,49 @@ app.put('/api/events/:id', async (req, res) => {
     event.endDate = endDate ?? event.endDate;
 
     await event.save();
-    res.json({ message: 'Event updated successfully', event });
+    res.json({ message: "Event updated successfully", event });
   } catch (err) {
-    res.status(500).json({ message: 'Error updating event' });
+    res.status(500).json({ message: "Error updating event" });
   }
 });
 
-app.delete('/api/events/:id', async (req, res) => {
+app.delete("/api/events/:id", async (req, res) => {
   try {
     const event = await Event.findById(req.params.id);
-    if (!event) return res.status(404).json({ message: 'Event not found' });
+    if (!event) return res.status(404).json({ message: "Event not found" });
 
     await event.deleteOne();
-    res.json({ message: 'Event deleted successfully' });
+    res.json({ message: "Event deleted successfully" });
   } catch (err) {
-    res.status(500).json({ message: 'Error deleting event' });
+    res.status(500).json({ message: "Error deleting event" });
   }
 });
 
+// ======================== Root route ========================
+app.get("/", (req, res) => {
+  res.send("🎉 Event Backend API is running successfully!");
+});
 
-const reactBuildPath = path.join(__dirname, 'client/build'); // adjust if different
+// ======================== React Build Serve (Optional) ========================
+const reactBuildPath = path.join(__dirname, "client/build");
 if (fs.existsSync(reactBuildPath)) {
   app.use(express.static(reactBuildPath));
-
-  // Catch-all to handle React Router routes like /login, /dashboard
-  app.get('*', (req, res) => {
-    res.sendFile(path.join(reactBuildPath, 'index.html'));
+  app.get("/*", (req, res) => {
+    res.sendFile(path.join(reactBuildPath, "index.html"));
   });
 } else {
-  console.warn('⚠️ React build folder not found. Run `npm run build` in your React app.');
+  console.warn("⚠️ React build folder not found. Run `npm run build`.");
 }
 
+// ======================== Global error handler ========================
+app.use((err, req, res, next) => {
+  console.error("🔥 Uncaught error:", err && err.stack ? err.stack : err);
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ success: false, message: err.message || "Server error" });
+});
+
+// ======================== 404 Fallback ========================
+app.use((req, res) => {
+  if (req.originalUrl.startsWith("/api")) return res.status(404).json({ message: "API route not found" });
+  res.status(404).send("Not Found");
+});
