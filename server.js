@@ -1,9 +1,9 @@
+// server.js
 // ======================== ENV + IMPORTS ========================
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
-const bodyParser = require("body-parser");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const multer = require("multer");
@@ -11,10 +11,19 @@ const path = require("path");
 const fs = require("fs");
 const http = require("http");
 const nodemailer = require("nodemailer");
-const Event = require("./models/Event");
+const Event = require("./models/Event"); // ensure this exists and schema is correct
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const NODE_ENV = process.env.NODE_ENV || "development";
+
+// ======================== ENV checks ========================
+const requiredEnvs = ["MONGO_URI", "JWT_SECRET", "EMAIL_USER", "EMAIL_PASS"];
+requiredEnvs.forEach((k) => {
+  if (!process.env[k]) {
+    console.warn(`⚠️  Environment variable ${k} is not set.`);
+  }
+});
 
 // ======================== Email Transporter ========================
 const transporter = nodemailer.createTransport({
@@ -25,11 +34,23 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// verify transporter (non-blocking)
+transporter.verify((err, success) => {
+  if (err) {
+    console.warn("⚠️  Mailer verification failed:", err && err.message ? err.message : err);
+  } else {
+    console.log("✅ Mailer ready");
+  }
+});
+
 // ======================== Ensure Uploads Folder ========================
 const uploadDir = path.join(__dirname, "uploads");
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+  console.log("✅ Created uploads directory:", uploadDir);
+}
 
-// ======================== Logger ========================
+// ======================== Logger (simple) ========================
 app.use((req, res, next) => {
   console.log(`➡️  ${req.method} ${req.originalUrl}`);
   next();
@@ -47,31 +68,40 @@ app.use(
   })
 );
 
+// JSON and URL-encoded parsing
 app.use(express.json({ limit: "10mb" }));
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+
+// serve uploads
 app.use("/uploads", express.static(uploadDir));
 
 // ======================== MongoDB Connection ========================
 mongoose
-  .connect(process.env.MONGO_URI)
+  .connect(process.env.MONGO_URI || "mongodb://localhost:27017/eventdb", {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
   .then(() => {
     console.log("✅ MongoDB Connected");
-    http.createServer(app).listen(PORT, () =>
-      console.log(`🚀 Server running on port ${PORT}`)
-    );
+    http.createServer(app).listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
   })
-  .catch((err) => console.error("❌ MongoDB Error:", err));
+  .catch((err) => console.error("❌ MongoDB Error:", err && err.message ? err.message : err));
 
 // ======================== Token Auth Middleware ========================
 const authenticateToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) return res.status(401).json({ message: "Unauthorized" });
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader && authHeader.split(" ")[1];
+    if (!token) return res.status(401).json({ success: false, message: "Unauthorized (no token)" });
 
-  jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ message: "Invalid token" });
-    req.user = decoded;
-    next();
-  });
+    jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
+      if (err) return res.status(403).json({ success: false, message: "Invalid token" });
+      req.user = decoded;
+      next();
+    });
+  } catch (err) {
+    next(err);
+  }
 };
 
 // ======================== Multer Setup ========================
@@ -83,8 +113,19 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
 });
+
+// ======================== Helpers ========================
+const buildBaseUrl = (req) => process.env.BASE_URL || `${req.protocol}://${req.get("host")}`;
+
+// Safe error responder - shows stack in non-production
+const sendServerError = (res, err, message = "Server error") => {
+  console.error("🔥 Server error:", err && err.stack ? err.stack : err);
+  const payload = { success: false, message };
+  if (NODE_ENV !== "production" && err && err.message) payload.error = err.message;
+  return res.status(500).json(payload);
+};
 
 // =============================================================
 // ======================== API ROUTES ==========================
@@ -96,58 +137,117 @@ app.get("/api/ping", (_, res) => res.json({ ok: true }));
 // ======================== REGISTER ========================
 app.post("/api/register", async (req, res) => {
   try {
-    const { eventName, clientName, contactNumber, email, password, venue, city, startDate, endDate } = req.body;
+    console.log("🔹 /api/register payload:", req.body);
 
-    if (await Event.findOne({ email }))
-      return res.status(400).json({ message: "Email already exists" });
+    const {
+      eventName,
+      clientName,
+      contactNumber,
+      email,
+      password,
+      venue,
+      city,
+      startDate,
+      endDate,
+    } = req.body || {};
+
+    // Basic required fields
+    if (!email || !password || !clientName) {
+      return res.status(400).json({ success: false, message: "Missing required fields (email, password, clientName)" });
+    }
+
+    // Validate dates if provided
+    let sDate = null;
+    let eDate = null;
+    if (startDate) {
+      sDate = new Date(startDate);
+      if (isNaN(sDate.getTime())) {
+        return res.status(400).json({ success: false, message: "Invalid startDate format" });
+      }
+    }
+    if (endDate) {
+      eDate = new Date(endDate);
+      if (isNaN(eDate.getTime())) {
+        return res.status(400).json({ success: false, message: "Invalid endDate format" });
+      }
+    }
+    if (sDate && eDate && eDate <= sDate) {
+      return res.status(400).json({ success: false, message: "End date must be after start date" });
+    }
+
+    // duplicate email
+    const existing = await Event.findOne({ email });
+    if (existing) {
+      return res.status(409).json({ success: false, message: "Email already exists" });
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
+
     const newEvent = new Event({
-      eventName, clientName, contactNumber, email, venue, city, startDate, endDate,
+      eventName,
+      clientName,
+      contactNumber,
+      email,
+      venue,
+      city,
+      startDate: sDate ?? undefined,
+      endDate: eDate ?? undefined,
       password: hashedPassword,
     });
 
     await newEvent.save();
 
-    await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: email,
-      subject: "🎉 Registration Successful!",
-      html: `
-        <h2>Hello ${clientName},</h2>
-        <p>You're successfully registered for <strong>${eventName}</strong>.</p>
-      `,
-    });
+    // send mail but don't fail registration if mail errors
+    try {
+      await transporter.sendMail({
+        from: process.env.EMAIL_USER,
+        to: email,
+        subject: "🎉 Registration Successful!",
+        html: `<h2>Hello ${clientName},</h2><p>You're successfully registered for <strong>${eventName}</strong>.</p>`,
+      });
+    } catch (mailErr) {
+      console.warn("⚠️ Mail send failed:", mailErr && mailErr.message ? mailErr.message : mailErr);
+    }
 
-    res.status(201).json({ message: "Registration successful, email sent!" });
+    return res.status(201).json({ success: true, message: "Registration successful" });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: "Server error during registration" });
+    // Handle Mongoose validation errors gracefully
+    if (err && err.name === "ValidationError") {
+      // collect messages
+      const messages = Object.values(err.errors || {}).map((e) => e.message);
+      return res.status(400).json({ success: false, message: "Validation failed", errors: messages });
+    }
+    // duplicate key
+    if (err && err.code === 11000) {
+      return res.status(409).json({ success: false, message: "Duplicate key error", details: err.keyValue });
+    }
+    console.error("REGISTER failed:", err && err.stack ? err.stack : err);
+    return res.status(500).json({ success: false, message: "Server error during registration" });
   }
 });
+
 
 // ======================== LOGIN ========================
 app.post("/api/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ success: false, message: "Missing email or password" });
+
     const user = await Event.findOne({ email });
-    if (!user) return res.status(400).json({ message: "User not found" });
+    if (!user) return res.status(404).json({ success: false, message: "User not found" });
 
     const match = await bcrypt.compare(password, user.password);
-    if (!match) return res.status(400).json({ message: "Invalid credentials" });
+    if (!match) return res.status(401).json({ success: false, message: "Invalid credentials" });
 
-    const token = jwt.sign(
-      { id: user._id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "1h" }
-    );
+    const token = jwt.sign({ id: user._id, email: user.email }, process.env.JWT_SECRET, {
+      expiresIn: "1h",
+    });
 
-    res.json({ message: "Login successful!", token });
+    return res.json({ success: true, message: "Login successful", token });
   } catch (err) {
-    res.status(500).json({ message: "Server error during login" });
+    return sendServerError(res, err, "Server error during login");
   }
 });
-
 // ======================== FETCH CURRENT USER ========================
 app.get("/api/me", authenticateToken, async (req, res) => {
   try {
