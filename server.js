@@ -1,5 +1,4 @@
-// server.js (full updated file)
-
+// ======================== ENV + IMPORTS ========================
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
@@ -11,19 +10,28 @@ const multer = require("multer");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
-const Event = require("./models/Event"); // Your Mongoose model
+const nodemailer = require("nodemailer");
+const Event = require("./models/Event");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+
+// ======================== Email Transporter ========================
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
+});
 
 // ======================== Ensure Uploads Folder ========================
 const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// ======================== Request logging (debug) ========================
-// Place this early so all incoming requests are logged
+// ======================== Debug Request Logger ========================
 app.use((req, res, next) => {
-  console.log(`⤴️  Incoming -> ${req.method} ${req.originalUrl}`);
+  console.log(`➡️  ${req.method} ${req.originalUrl}`);
   next();
 });
 
@@ -35,39 +43,35 @@ app.use(
       "http://localhost:3000",
       "https://artiststation.co.in",
     ],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
   })
 );
 
 app.use(express.json({ limit: "10mb" }));
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use("/uploads", express.static(uploadDir)); // serve images
+app.use("/uploads", express.static(uploadDir));
 
 // ======================== MongoDB Connection ========================
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB Connected");
-    const server = http.createServer(app);
-    server.listen(PORT, () =>
-      console.log(`🚀 Server running on port ${PORT} (HTTP/1.1)`)
+    http.createServer(app).listen(PORT, () =>
+      console.log(`🚀 Server running on port ${PORT}`)
     );
   })
-  .catch((err) => console.error("❌ MongoDB Connection Error:", err));
+  .catch((err) => console.error("❌ MongoDB Error:", err));
 
 // ======================== JWT Middleware ========================
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers["authorization"];
-  if (!authHeader)
-    return res.status(401).json({ message: "Authorization header missing" });
+  if (!authHeader) return res.status(401).json({ message: "Authorization missing" });
 
   const token = authHeader.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Token missing" });
 
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-    if (err) return res.status(403).json({ message: "Invalid or expired token" });
+    if (err) return res.status(403).json({ message: "Invalid token" });
     req.user = decoded;
     next();
   });
@@ -75,56 +79,31 @@ const authenticateToken = (req, res, next) => {
 
 // ======================== Multer Config ========================
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadDir),
-  filename: (req, file, cb) =>
+  destination: (_, __, cb) => cb(null, uploadDir),
+  filename: (_, file, cb) =>
     cb(null, `${Date.now()}-${file.originalname.replace(/\s+/g, "-")}`),
 });
 
 const upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
-  fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif/;
-    allowedTypes.test(file.mimetype)
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_, file, cb) =>
+    /jpeg|jpg|png|gif/.test(file.mimetype)
       ? cb(null, true)
-      : cb(new Error("Only image files allowed."));
-  },
+      : cb(new Error("Only image files allowed.")),
 });
 
 // =============================================================
 // ======================== API ROUTES ==========================
 // =============================================================
 
-// ------------------------ Debug/Health ------------------------
-app.get("/api/ping", (req, res) => {
-  console.log("🟢 GET /api/ping");
-  res.json({ ok: true, env: process.env.NODE_ENV || "unknown" });
-});
-
-// TEMP: debug route to test multer/form-data without auth
-// REMOVE or protect this route after you finish debugging.
-app.post("/api/update-profile-debug", upload.single("profileImg"), async (req, res) => {
-  console.log("🔧 Hit /api/update-profile-debug", {
-    body: req.body,
-    file: req.file && req.file.filename,
-  });
-  res.json({ success: true, message: "debug ok", body: req.body, file: req.file ? req.file.filename : null });
-});
+// Health check
+app.get("/api/ping", (_, res) => res.json({ ok: true }));
 
 // ======================== REGISTER ========================
 app.post("/api/register", async (req, res) => {
   try {
-    const {
-      eventName,
-      clientName,
-      contactNumber,
-      email,
-      password,
-      venue,
-      city,
-      startDate,
-      endDate,
-    } = req.body;
+    const { eventName, clientName, contactNumber, email, password, venue, city, startDate, endDate } = req.body;
 
     const existing = await Event.findOne({ email });
     if (existing) return res.status(400).json({ message: "Email already exists" });
@@ -143,9 +122,27 @@ app.post("/api/register", async (req, res) => {
     });
 
     await newEvent.save();
-    res.status(201).json({ message: "Registration successful!" });
+
+    // ============ SEND EMAIL ============
+    await transporter.sendMail({
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: "🎉 Registration Successful!",
+      html: `
+      <h2>Hello ${clientName},</h2>
+      <p>You successfully registered for <strong>${eventName}</strong>.</p>
+      <ul>
+        <li>📍 ${venue}, ${city}</li>
+        <li>📅 ${startDate} → ${endDate}</li>
+      </ul>
+      <p>Thank you!</p>
+    `,
+    });
+
+    res.status(201).json({ message: "Registration successful, email sent!" });
+
   } catch (err) {
-    console.error("Register Error:", err);
+    console.error("❌ Register Error:", err);
     res.status(500).json({ message: "Server error during registration" });
   }
 });
