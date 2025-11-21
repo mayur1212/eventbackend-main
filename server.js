@@ -29,7 +29,7 @@ const transporter = nodemailer.createTransport({
 const uploadDir = path.join(__dirname, "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// ======================== Debug Request Logger ========================
+// ======================== Logger ========================
 app.use((req, res, next) => {
   console.log(`➡️  ${req.method} ${req.originalUrl}`);
   next();
@@ -62,13 +62,10 @@ mongoose
   })
   .catch((err) => console.error("❌ MongoDB Error:", err));
 
-// ======================== JWT Middleware ========================
+// ======================== Token Auth Middleware ========================
 const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers["authorization"];
-  if (!authHeader) return res.status(401).json({ message: "Authorization missing" });
-
-  const token = authHeader.split(" ")[1];
-  if (!token) return res.status(401).json({ message: "Token missing" });
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
 
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) return res.status(403).json({ message: "Invalid token" });
@@ -77,7 +74,7 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
-// ======================== Multer Config ========================
+// ======================== Multer Setup ========================
 const storage = multer.diskStorage({
   destination: (_, __, cb) => cb(null, uploadDir),
   filename: (_, file, cb) =>
@@ -87,10 +84,6 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (_, file, cb) =>
-    /jpeg|jpg|png|gif/.test(file.mimetype)
-      ? cb(null, true)
-      : cb(new Error("Only image files allowed.")),
 });
 
 // =============================================================
@@ -105,44 +98,30 @@ app.post("/api/register", async (req, res) => {
   try {
     const { eventName, clientName, contactNumber, email, password, venue, city, startDate, endDate } = req.body;
 
-    const existing = await Event.findOne({ email });
-    if (existing) return res.status(400).json({ message: "Email already exists" });
+    if (await Event.findOne({ email }))
+      return res.status(400).json({ message: "Email already exists" });
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const newEvent = new Event({
-      eventName,
-      clientName,
-      contactNumber,
-      email,
+      eventName, clientName, contactNumber, email, venue, city, startDate, endDate,
       password: hashedPassword,
-      venue,
-      city,
-      startDate,
-      endDate,
     });
 
     await newEvent.save();
 
-    // ============ SEND EMAIL ============
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: email,
       subject: "🎉 Registration Successful!",
       html: `
-      <h2>Hello ${clientName},</h2>
-      <p>You successfully registered for <strong>${eventName}</strong>.</p>
-      <ul>
-        <li>📍 ${venue}, ${city}</li>
-        <li>📅 ${startDate} → ${endDate}</li>
-      </ul>
-      <p>Thank you!</p>
-    `,
+        <h2>Hello ${clientName},</h2>
+        <p>You're successfully registered for <strong>${eventName}</strong>.</p>
+      `,
     });
 
     res.status(201).json({ message: "Registration successful, email sent!" });
-
   } catch (err) {
-    console.error("❌ Register Error:", err);
+    console.error(err);
     res.status(500).json({ message: "Server error during registration" });
   }
 });
